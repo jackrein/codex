@@ -656,6 +656,14 @@ pub const DEFAULT_OLLAMA_PORT: u16 = 11434;
 pub const LMSTUDIO_OSS_PROVIDER_ID: &str = "lmstudio";
 pub const OLLAMA_OSS_PROVIDER_ID: &str = "ollama";
 
+/// Whether a provider ID selects either built-in Amazon Bedrock transport.
+pub fn is_amazon_bedrock_provider_id(provider: &str) -> bool {
+    matches!(
+        provider,
+        AMAZON_BEDROCK_PROVIDER_ID | AMAZON_BEDROCK_RUNTIME_PROVIDER_ID
+    )
+}
+
 /// Built-in default provider list.
 pub fn built_in_model_providers(
     openai_base_url: Option<String>,

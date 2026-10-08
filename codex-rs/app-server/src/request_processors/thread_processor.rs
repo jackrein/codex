@@ -249,6 +249,29 @@ fn merge_persisted_resume_metadata(
     }
 }
 
+fn bedrock_resume_model_id(model: &str, provider: &str, configured_model: Option<&str>) -> String {
+    use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+    use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
+
+    match provider {
+        AMAZON_BEDROCK_RUNTIME_PROVIDER_ID if model.starts_with("openai.") => {
+            let prefix = if configured_model.is_some_and(|model| model.starts_with("us.openai.")) {
+                "us."
+            } else {
+                "global."
+            };
+            format!("{prefix}{model}")
+        }
+        AMAZON_BEDROCK_PROVIDER_ID => model
+            .strip_prefix("global.")
+            .or_else(|| model.strip_prefix("us."))
+            .filter(|model| model.starts_with("openai."))
+            .unwrap_or(model)
+            .to_string(),
+        _ => model.to_string(),
+    }
+}
+
 fn normalize_thread_list_cwd_filters(
     cwd: Option<ThreadListCwdFilter>,
 ) -> Result<Option<Vec<PathBuf>>, JSONRPCErrorError> {
@@ -3962,6 +3985,10 @@ impl ThreadRequestProcessor {
             && persisted_metadata
                 .as_ref()
                 .is_some_and(|metadata| metadata.reasoning_effort.is_none());
+        let restore_bedrock_transport = !has_explicit_model_resume_override
+            && persisted_metadata.as_ref().is_some_and(|metadata| {
+                codex_model_provider_info::is_amazon_bedrock_provider_id(&metadata.model_provider)
+            });
         let config_state = ResumeConfigState {
             history_cwd: history_cwd.clone(),
             workspace_roots: typesafe_overrides.workspace_roots.clone(),
@@ -3979,11 +4006,45 @@ impl ThreadRequestProcessor {
                 // Config loading can call back into Desktop; release both locks during host work.
                 drop(_goal_resume_guard);
                 drop(_thread_list_state_permit);
-                let config = self
-                    .config_manager
-                    .load_for_cwd(request_overrides, typesafe_overrides, history_cwd)
+                let mut effective_overrides = typesafe_overrides.clone();
+                if restore_bedrock_transport {
+                    // Resolve the currently configured Bedrock transport for the resume cwd.
+                    effective_overrides.model_provider = None;
+                    effective_overrides.model = None;
+                }
+                let mut config = Box::pin(self.config_manager.load_for_cwd(
+                    request_overrides.clone(),
+                    effective_overrides,
+                    history_cwd.clone(),
+                ))
+                .await
+                .map_err(|err| config_load_error(&err))?;
+                if restore_bedrock_transport
+                    && codex_model_provider_info::is_amazon_bedrock_provider_id(
+                        &config.model_provider_id,
+                    )
+                    && let Some(metadata) = config_state.persisted_metadata.as_ref()
+                    && let Some(model) = metadata.model.as_deref()
+                {
+                    config.model = Some(bedrock_resume_model_id(
+                        model,
+                        &config.model_provider_id,
+                        config.model.as_deref(),
+                    ));
+                }
+                if restore_bedrock_transport
+                    && !codex_model_provider_info::is_amazon_bedrock_provider_id(
+                        &config.model_provider_id,
+                    )
+                {
+                    config = Box::pin(self.config_manager.load_for_cwd(
+                        request_overrides,
+                        typesafe_overrides,
+                        history_cwd,
+                    ))
                     .await
                     .map_err(|err| config_load_error(&err))?;
+                }
                 *prepared_config = Some(PreparedResumeConfig {
                     state: config_state,
                     config,

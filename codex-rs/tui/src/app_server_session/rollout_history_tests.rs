@@ -23,6 +23,104 @@ async fn build_config(temp_dir: &TempDir) -> Config {
 }
 
 #[tokio::test]
+async fn bedrock_resume_uses_current_transport_configuration() -> Result<()> {
+    use std::io::Write;
+
+    for prefix in ["global.", "us."] {
+        for (current, saved, legacy_model_id) in [
+            ("amazon-bedrock-runtime", "amazon-bedrock", false),
+            ("amazon-bedrock", "amazon-bedrock-runtime", false),
+            ("amazon-bedrock-runtime", "amazon-bedrock-runtime", true),
+        ] {
+            let home = TempDir::new()?;
+            let saved_model = if saved == "amazon-bedrock" || legacy_model_id {
+                "openai.gpt-6.1-sol".to_string()
+            } else {
+                format!("{prefix}openai.gpt-6.1-sol")
+            };
+            let expected_model = if current == "amazon-bedrock" {
+                "openai.gpt-6.1-sol".to_string()
+            } else {
+                format!("{prefix}openai.gpt-6.1-sol")
+            };
+            let configured_model = if current == "amazon-bedrock" {
+                "openai.gpt-6-astra".to_string()
+            } else {
+                format!("{prefix}openai.gpt-6-astra")
+            };
+            let config_toml = format!(
+                "model_provider = \"{saved}\"\n\
+                 model = \"{configured_model}\"\n\
+                 model_reasoning_effort = \"high\"\n\
+                 [model_providers.{current}.aws]\n\
+                 region = \"us-east-1\"\n\
+                 profile = \"resume-test-profile\"\n"
+            );
+            std::fs::write(home.path().join("config.toml"), &config_toml)?;
+            let config = build_config(&home).await;
+            let thread_id = ThreadId::from_string(
+                &create_fake_rollout(
+                    home.path(),
+                    "2025-01-05T12-00-00",
+                    "2025-01-05T12:00:00Z",
+                    "Saved Bedrock user message",
+                    Some(saved),
+                    None,
+                )
+                .expect("create Bedrock rollout"),
+            )?;
+            let mut rollout =
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(app_test_support::rollout_path(
+                        home.path(),
+                        "2025-01-05T12-00-00",
+                        &thread_id.to_string(),
+                    ))?;
+            writeln!(
+                rollout,
+                "{}",
+                serde_json::json!({
+                    "timestamp": "2025-01-05T12:00:01Z",
+                    "type": "turn_context",
+                    "payload": {
+                        "cwd": home.path(),
+                        "approval_policy": "never",
+                        "sandbox_policy": {"type": "read-only"},
+                        "model": saved_model,
+                        "effort": null
+                    }
+                })
+            )?;
+            let mut server = crate::start_embedded_app_server_for_picker(&config).await?;
+            // Change the transport after startup to exercise fresh resume configuration.
+            std::fs::write(
+                home.path().join("config.toml"),
+                config_toml.replace(
+                    &format!("model_provider = \"{saved}\""),
+                    &format!("model_provider = \"{current}\""),
+                ),
+            )?;
+            let config = build_config(&home).await;
+            let resumed = server
+                .resume_thread(
+                    &crate::local_settings::LocalSettings::from(&config),
+                    config,
+                    thread_id,
+                    ResumeModelSettings::RestoreFromThread,
+                )
+                .await?;
+            assert_eq!(resumed.session.model_provider_id, current);
+            assert_eq!(resumed.session.model, expected_model);
+            assert_eq!(resumed.session.reasoning_effort, None);
+            assert_eq!(resumed.session.thread_id, thread_id);
+            server.shutdown().await?;
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn remote_resume_restores_saved_server_profile_without_permission_overrides() -> Result<()> {
     let home = tempfile::tempdir()?;
     std::fs::write(

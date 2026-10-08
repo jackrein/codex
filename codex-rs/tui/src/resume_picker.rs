@@ -2096,10 +2096,10 @@ fn thread_list_params(
         limit: Some(PAGE_SIZE as u32),
         sort_key: Some(sort_key),
         sort_direction: None,
-        model_providers: match provider_filter {
+        model_providers: crate::session_provider_filter(match provider_filter {
             ProviderFilter::Any => None,
-            ProviderFilter::MatchDefault(default_provider) => Some(vec![default_provider]),
-        },
+            ProviderFilter::MatchDefault(default_provider) => Some(default_provider),
+        }),
         source_kinds: Some(crate::resume_source_kinds(include_non_interactive)),
         archived: Some(status == SessionStatus::Archived),
         section_id: None,
@@ -4361,6 +4361,34 @@ mod tests {
             "resume_picker_shared_provider_history",
             render_picker_list(&state, /*width*/ 80, /*height*/ 12)
         );
+    }
+
+    #[test]
+    fn bedrock_thread_list_params_share_provider_history() {
+        for provider in [
+            "amazon-bedrock",
+            "amazon-bedrock-runtime",
+            "custom-provider",
+        ] {
+            let params = thread_list_params(
+                None,
+                None,
+                SessionStatus::Active,
+                ProviderFilter::MatchDefault(provider.to_string()),
+                ThreadSortKey::UpdatedAt,
+                false,
+                false,
+            );
+            let expected = if provider == "custom-provider" {
+                vec!["custom-provider".to_string()]
+            } else {
+                vec![
+                    "amazon-bedrock".to_string(),
+                    "amazon-bedrock-runtime".to_string(),
+                ]
+            };
+            assert_eq!(params.model_providers, Some(expected));
+        }
     }
 
     #[test]

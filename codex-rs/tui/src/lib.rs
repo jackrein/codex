@@ -870,6 +870,23 @@ enum LatestSessionLookupMode {
     ScanAndRepair,
 }
 
+/// Build the session-list provider filter, sharing history between Bedrock transports.
+fn session_provider_filter(provider: Option<String>) -> Option<Vec<String>> {
+    use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+    use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
+
+    provider.map(|provider| {
+        if codex_model_provider_info::is_amazon_bedrock_provider_id(&provider) {
+            vec![
+                AMAZON_BEDROCK_PROVIDER_ID.to_string(),
+                AMAZON_BEDROCK_RUNTIME_PROVIDER_ID.to_string(),
+            ]
+        } else {
+            vec![provider]
+        }
+    })
+}
+
 fn latest_session_lookup_params(
     uses_remote_filesystem: bool,
     model_provider: Option<String>,
@@ -885,7 +902,7 @@ fn latest_session_lookup_params(
         limit: Some(1),
         sort_key: Some(AppServerThreadSortKey::UpdatedAt),
         sort_direction: None,
-        model_providers: model_provider.map(|provider| vec![provider]),
+        model_providers: session_provider_filter(model_provider),
         source_kinds: Some(resume_source_kinds(include_non_interactive)),
         archived: Some(false),
         section_id: None,
@@ -3253,6 +3270,30 @@ requires_openai_auth = {requires_openai_auth}
             LatestSessionLookupMode::ScanAndRepair,
         );
         assert!(!scan_params.use_state_db_only);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn latest_session_lookup_params_share_bedrock_history() -> color_eyre::Result<()> {
+        let temp_dir = TempDir::new()?;
+        let config = build_config(&temp_dir).await?;
+        for provider in ["amazon-bedrock", "amazon-bedrock-runtime"] {
+            let params = latest_session_lookup_params(
+                false,
+                Some(provider.to_string()),
+                &config,
+                None,
+                false,
+                LatestSessionLookupMode::StateDbOnly,
+            );
+            assert_eq!(
+                params.model_providers,
+                Some(vec![
+                    "amazon-bedrock".to_string(),
+                    "amazon-bedrock-runtime".to_string(),
+                ])
+            );
+        }
         Ok(())
     }
 

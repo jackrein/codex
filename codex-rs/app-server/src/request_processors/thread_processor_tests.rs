@@ -758,6 +758,42 @@ mod thread_processor_behavior_tests {
     }
 
     #[test]
+    fn bedrock_resume_model_ids_preserve_routing_and_custom_ids() {
+        let mantle = "amazon-bedrock";
+        let runtime = "amazon-bedrock-runtime";
+        let model = "openai.gpt-6.1-sol";
+        for (saved, provider, configured, expected) in [
+            (model, runtime, None, "global.openai.gpt-6.1-sol"),
+            (
+                model,
+                runtime,
+                Some("us.openai.gpt-6-astra"),
+                "us.openai.gpt-6.1-sol",
+            ),
+            ("global.openai.gpt-6.1-sol", mantle, None, model),
+            ("us.openai.gpt-6.1-sol", mantle, None, model),
+            (
+                "us.openai.gpt-6.1-sol",
+                runtime,
+                None,
+                "us.openai.gpt-6.1-sol",
+            ),
+            (
+                "arn:aws:bedrock:custom-profile",
+                runtime,
+                None,
+                "arn:aws:bedrock:custom-profile",
+            ),
+            ("custom.model", mantle, None, "custom.model"),
+        ] {
+            assert_eq!(
+                bedrock_resume_model_id(saved, provider, configured),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn merge_persisted_resume_metadata_prefers_persisted_model_and_reasoning_effort() -> Result<()>
     {
         let mut request_overrides = None;
