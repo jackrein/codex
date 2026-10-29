@@ -430,25 +430,15 @@ impl ConfigManager {
         Ok(CloudStartupConfig { bootstrap, config })
     }
 
-    /// Admits resumed threads and input only on the currently selected provider.
+    /// Validates current settings and managed policy while retaining the thread's provider.
     pub(crate) async fn check_thread_model_provider_for_input(
         &self,
         current: &Config,
     ) -> std::io::Result<()> {
         self.check_thread_model_provider(current).await?;
-        let configured = self
-            .load_latest_config(Some(current.cwd.to_path_buf()))
-            .await?;
-        if current.model_provider_id != configured.model_provider_id {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                ModelProviderError::ModelProviderMismatch {
-                    model_provider: current.model_provider_id.clone(),
-                    current_model_provider: configured.model_provider_id,
-                },
-            ));
-        }
-        Ok(())
+        self.load_latest_config(Some(current.cwd.to_path_buf()))
+            .await
+            .map(|_| ())
     }
 
     /// Installs local policy before cloud access; failed policy loads block traffic while
@@ -543,18 +533,23 @@ impl ConfigManager {
         typesafe_overrides: ConfigOverrides,
         cwd: Option<PathBuf>,
     ) -> std::io::Result<Config> {
-        let requested_provider = typesafe_overrides.model_provider.clone().or_else(|| {
-            request_overrides
-                .as_ref()
-                .and_then(|values| values.get("model_provider"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        });
-        // Resolve the selection before the saved provider is applied as a resume override.
-        let current_provider = self
-            .load_latest_config(typesafe_overrides.cwd.clone().or_else(|| cwd.clone()))
-            .await
-            .map(|config| config.model_provider_id);
+        // Settings select the provider for new threads. Resumed threads retain
+        // their saved provider unless the request explicitly selects another.
+        let requested_provider = typesafe_overrides
+            .model_provider
+            .clone()
+            .or_else(|| {
+                request_overrides
+                    .as_ref()
+                    .and_then(|values| values.get("model_provider"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .or_else(|| saved_provider.map(str::to_owned));
+        let typesafe_overrides = ConfigOverrides {
+            model_provider: requested_provider.clone(),
+            ..typesafe_overrides
+        };
         self.load_with_validation(
             &self.current_cli_overrides(),
             request_overrides,
@@ -589,21 +584,6 @@ impl ConfigManager {
                             std::io::ErrorKind::NotFound,
                             ModelProviderError::ModelProviderNotConfigured {
                                 model_provider: provider.to_owned(),
-                            },
-                        ));
-                    }
-                }
-                let current_provider = current_provider?;
-                for provider in [
-                    saved_provider.unwrap_or(requested_provider),
-                    requested_provider,
-                ] {
-                    if provider != current_provider {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            ModelProviderError::ModelProviderMismatch {
-                                model_provider: provider.to_owned(),
-                                current_model_provider: current_provider,
                             },
                         ));
                     }

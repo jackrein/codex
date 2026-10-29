@@ -6904,11 +6904,13 @@ async fn thread_resume_returns_provider_error_even_with_provider_override(
     Ok(())
 }
 
-#[test_case::test_case(false; "missing_definition")]
-#[test_case::test_case(true; "provider_mismatch")]
+#[test_case::test_case(false, false; "missing_definition")]
+#[test_case::test_case(true, false; "saved_provider_differs_from_settings")]
+#[test_case::test_case(true, true; "saved_provider_with_model_override")]
 #[tokio::test]
 async fn thread_resume_recovers_after_provider_configuration_is_restored(
     configured: bool,
+    model_override: bool,
 ) -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
     let home = TempDir::new()?;
@@ -6938,9 +6940,16 @@ async fn thread_resume_recovers_after_provider_configuration_is_restored(
         .await?;
     let params = ThreadResumeParams {
         thread_id,
+        model: model_override.then(|| "gpt-5.1-codex".into()),
         ..Default::default()
     };
     let id = client.send_thread_resume_request(params.clone()).await?;
+    if configured {
+        let resumed: ThreadResumeResponse = client.read_response(id).await?;
+        assert_eq!(resumed.model_provider, "old_provider");
+        assert_eq!(resumed.thread.model_provider, "old_provider");
+        return Ok(());
+    }
     let error = client
         .read_stream_until_error_message(RequestId::Integer(id))
         .await?;
@@ -6950,33 +6959,8 @@ async fn thread_resume_recovers_after_provider_configuration_is_restored(
             .data
             .as_ref()
             .expect("provider error should include structured data")["type"],
-        if configured {
-            "modelProviderMismatch"
-        } else {
-            "modelProviderNotConfigured"
-        }
+        "modelProviderNotConfigured"
     );
-    if configured {
-        for overrides in [
-            ThreadResumeParams {
-                model_provider: Some("mock_provider".into()),
-                ..params.clone()
-            },
-            ThreadResumeParams {
-                config: Some(std::collections::HashMap::from([(
-                    "model_provider".into(),
-                    json!("mock_provider"),
-                )])),
-                ..params.clone()
-            },
-        ] {
-            let id = client.send_thread_resume_request(overrides).await?;
-            let overridden = client
-                .read_stream_until_error_message(RequestId::Integer(id))
-                .await?;
-            assert_eq!(overridden.error, error.error);
-        }
-    }
     let id = client
         .send_raw_request(
             "thread/read",
@@ -6986,14 +6970,7 @@ async fn thread_resume_recovers_after_provider_configuration_is_restored(
     let read: codex_app_server_protocol::ThreadReadResponse = client.read_response(id).await?;
     assert_eq!(read.thread.model_provider, "old_provider");
     let config = std::fs::read_to_string(&config_path)?;
-    let restored = if configured {
-        config.replace(
-            "model_provider = \"mock_provider\"",
-            "model_provider = \"old_provider\"",
-        )
-    } else {
-        config.replace("mock_provider", "old_provider")
-    };
+    let restored = config.replace("mock_provider", "old_provider");
     std::fs::write(config_path, restored)?;
     let id = client.send_thread_resume_request(params).await?;
     let resumed: ThreadResumeResponse = client.read_response(id).await?;

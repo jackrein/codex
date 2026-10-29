@@ -42,7 +42,6 @@ use wiremock::MockServer;
 
 #[test_case("other"; "selection_changes")]
 #[test_case("gateway"; "definition_changes")]
-#[test_case("default"; "default_selection_changes")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn provider_requirement_changes_reject_inputs_to_existing_threads(
     required_selection: &str,
@@ -79,17 +78,7 @@ base_url = "{}/v1"
         other.uri(),
     );
     let requirements_path = home.path().join("requirements.toml");
-    if required_selection == "default" {
-        std::fs::write(
-            &requirements_path,
-            requirements.replace("model_provider = \"gateway\"", ""),
-        )?;
-        let path = home.path().join("config.toml");
-        let config = std::fs::read_to_string(&path)?;
-        std::fs::write(path, config.replace("mock_provider", "gateway"))?;
-    } else {
-        std::fs::write(&requirements_path, &requirements)?;
-    }
+    std::fs::write(&requirements_path, &requirements)?;
     let mut server = TestAppServer::builder()
         .with_codex_home(home.path())
         .with_json_logging("warn")
@@ -136,24 +125,12 @@ base_url = "{}/v1"
     } else {
         requirements.replace(gateway.uri(), &other.uri())
     };
-    let provider_error = if required_selection == "default" {
-        let path = home.path().join("config.toml");
-        let config = std::fs::read_to_string(&path)?;
-        std::fs::write(
-            path,
-            config.replace("model_provider = \"gateway\"", "model_provider = \"other\""),
-        )?;
-        codex_app_server_protocol::ModelProviderError::ModelProviderMismatch {
-            model_provider: "gateway".into(),
-            current_model_provider: "other".into(),
-        }
-    } else {
-        std::fs::write(requirements_path, updated)?;
+    std::fs::write(requirements_path, updated)?;
+    let provider_error =
         codex_app_server_protocol::ModelProviderError::ModelProviderPolicyConflict {
             model_provider: "gateway".into(),
             required_model_provider: required_selection.into(),
-        }
-    };
+        };
     let expected_error = JSONRPCErrorError {
         code: -32600,
         message: provider_error.to_string(),
@@ -287,7 +264,7 @@ base_url = "{}/v1"
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn provider_selection_can_be_restored_for_existing_threads() -> Result<()> {
+async fn provider_selection_changes_preserve_existing_threads() -> Result<()> {
     let provider = MockServer::start().await;
     let home = TempDir::new()?;
     MockResponsesConfig::new(&provider.uri()).write(home.path())?;
@@ -318,29 +295,6 @@ async fn provider_selection_can_be_restored_for_existing_threads() -> Result<()>
         }],
         ..Default::default()
     };
-    let id = server.send_turn_start_request(params.clone()).await?;
-    let error = server
-        .read_stream_until_error_message(RequestId::Integer(id))
-        .await?;
-    assert_eq!(
-        error.error.data,
-        Some(serde_json::to_value(
-            codex_app_server_protocol::ModelProviderError::ModelProviderMismatch {
-                model_provider: "mock_provider".into(),
-                current_model_provider: "openai".into(),
-            }
-        )?)
-    );
-    assert!(requests.requests().is_empty());
-    let id = server
-        .send_raw_request(
-            "thread/read",
-            Some(json!({"threadId": started.thread.id, "includeTurns": false})),
-        )
-        .await?;
-    let read: codex_app_server_protocol::ThreadReadResponse = server.read_response(id).await?;
-    assert_eq!(read.thread.model_provider, "mock_provider");
-    std::fs::write(path, original)?;
     let id = server.send_turn_start_request(params).await?;
     let _: TurnStartResponse = server.read_response(id).await?;
     server

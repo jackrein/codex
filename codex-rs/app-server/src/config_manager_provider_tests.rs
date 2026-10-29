@@ -262,11 +262,11 @@ async fn catalog_reload_uses_latest_model_provider() -> Result<()> {
     Ok(())
 }
 
-/// Invocation overrides and selected profiles still define the current provider.
+/// Invocation overrides and selected profiles do not invalidate a retained provider.
 #[test_case("model_provider", "gateway"; "explicit_provider")]
 #[test_case("profile", "gateway-profile"; "selected_profile")]
 #[tokio::test]
-async fn input_provider_check_uses_effective_selection(key: &str, value: &str) -> Result<()> {
+async fn input_provider_check_preserves_retained_provider(key: &str, value: &str) -> Result<()> {
     let home = tempdir()?;
     std::fs::write(
         home.path().join("config.toml"),
@@ -305,18 +305,8 @@ name = "Gateway"
         .await?;
     let default_manager =
         ConfigManager::without_managed_config_for_tests(home.path().to_path_buf());
-    let error = default_manager
+    default_manager
         .check_thread_model_provider_for_input(&current)
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error
-            .get_ref()
-            .and_then(|error| error.downcast_ref::<ModelProviderError>()),
-        Some(&ModelProviderError::ModelProviderMismatch {
-            model_provider: "gateway".into(),
-            current_model_provider: "openai".into(),
-        })
-    );
+        .await?;
     Ok(())
 }
